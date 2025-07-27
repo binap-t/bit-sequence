@@ -1,1 +1,29 @@
 # bit-sequence
+
+## 概要
+長さ N = 100 の 0/1 ビット列 S を提出し、M = 30 条件の得点を最大化せよ。
+
+### 入力
+```
+N M            (固定 100 30)
+D1 X1 Y1
+...
+D_M X_M Y_M
+```
+制約: 1 ≤ D_i ≤ 30, 0 ≤ X_i ≤ D_i, 1 ≤ Y_i ≤ 10 000
+
+### スコア
+各条件 (D_i, X_i, Y_i) について
+for s = 0 .. N-D_i
+  if popcount(S[s..s+D_i-1]) == X_i
+    score += Y_i
+
+### テストケース生成
+乱数生成器 rng, seed 固定
+```
+D_i ← rand_int(rng, 1, 30)
+X_i ← rand_int(rng, 0, D_i)
+base ← 10000 / (N - D_i + 1)
+Y_i ← round(base * (0.8 + 0.4*rng()))  // ±20 %
+```
+D_i 昇順に並べる。
