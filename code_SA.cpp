@@ -1,12 +1,12 @@
 // SEED: 0
-// SCORE: 37104
-// 1011000001000101011111111001010001100000101001101111101110100000110001100100010010101010010000010010
+// SCORE: 44151
+// 1001000100011010001000100100111111111000110010000011000101111111110001100000100011000110001000110000
 
 #include <bits/stdc++.h>
 using namespace std;
 using  ll = long long;
 
-/* ----- RNG (xoshiro256++) ----- */
+/* ---------- RNG (xoshiro256++) ---------- */
 struct RNG {
     uint64_t s[4];
     static inline uint64_t rotl(uint64_t x,int k){ return (x<<k)|(x>>(64-k)); }
@@ -63,7 +63,7 @@ int main(){
     D.resize(M); X.resize(M); Y.resize(M);
     for(int i=0;i<M;i++) cin>>D[i]>>X[i]>>Y[i];
 
-    /* pre‑compute windows & belongs */
+    /* ---------- pre‑compute windows & belongs ---------- */
     windows.resize(M);
     belongs.assign(N,{});
     for(int i=0;i<M;i++){
@@ -74,7 +74,7 @@ int main(){
                 belongs[s+k].push_back({i,s});
     }
 
-    /* initial greedy solution */
+    /* ---------- initial greedy solution ---------- */
     string S(N,'0');
     for(int pos=0; pos<N; ++pos){
         long long g1=0,g0=0;
@@ -89,27 +89,28 @@ int main(){
         }
     }
 
-    /* smooth table init */
+    /* ---------- smooth table init ---------- */
     tbl.resize(M);
     for(int i=0;i<M;i++) tbl[i].resize(D[i]+1);
 
     const double sigma_vals[] = {4,3,2,1,0.5,0};
     const int PHASES = sizeof(sigma_vals)/sizeof(sigma_vals[0]);
-    const int IT_TOTAL = 400000;
+    const int IT_TOTAL = 4000000;
     const int IT_PER  = IT_TOTAL/PHASES;
 
     build_table(sigma_vals[0]);
     long long score = recompute();
 
     RNG rng(chrono::high_resolution_clock::now().time_since_epoch().count());
-    const double T0=2000.0, T_end=10.0;
+    const double T0=1000.0, T_end=10.0;
     double T=T0, decay=pow(T_end/T0,1.0/IT_TOTAL);
 
-    /* stderr dumps */
+    /* ---------- stderr dumps ---------- */
     const int TARGET_DUMP = 200;
     const int DUMP_INT = max(1, IT_TOTAL / TARGET_DUMP);
     int dump_cnt = 0;
 
+    /* ---------- 1 点反転 Δ ---------- */
     auto flip_delta = [&](int pos,bool commit)->long long{
         bool to1 = (S[pos]=='0');
         long long d=0;
@@ -125,32 +126,64 @@ int main(){
         return d;
     };
 
-    auto start = chrono::high_resolution_clock::now();
+    /* ---------- 2 点 SWAP Δ (正確) ---------- */
+    auto swap_delta = [&](int a,int b,bool commit)->long long{
+        if(a==b || S[a]==S[b]) return 0;            // 同じ位置または同一値なら効果なし
+        long long d=0;
+        if(!commit){
+            long long d1 = flip_delta(a,true);      // a を一時反転
+            long long d2 = flip_delta(b,false);     // その状態で b を評価
+            flip_delta(a,true);                     // a を元に戻す
+            d = d1 + d2;
+        }else{
+            d += flip_delta(a,true);                // 本採用：両方反転
+            d += flip_delta(b,true);
+        }
+        return d;
+    };
+
+    /* ---------- Simulated Annealing ---------- */
+    auto t_start = chrono::high_resolution_clock::now();
     int phase=0;
     for(int it=0; it<IT_TOTAL; ++it){
+        /* phase 切替え */
         if(it && it%IT_PER==0 && phase+1<PHASES){
             ++phase;
             build_table(sigma_vals[phase]);
             score = recompute();
         }
+        /* 時間切れ保険 (8.0s) */
         if(it%4000==0){
             auto now=chrono::high_resolution_clock::now();
-            if(chrono::duration_cast<chrono::milliseconds>(now-start).count()>7800) break;
+            if(chrono::duration_cast<chrono::milliseconds>(now-t_start).count()>7800) break;
         }
+        /* デバッグ出力 */
         if(it%DUMP_INT==0 && dump_cnt<TARGET_DUMP){
             cerr<<S<<"\n";
             ++dump_cnt;
         }
-        int pos=rng.randint(0,N-1);
-        long long d=flip_delta(pos,false);
-        if(d>=0 || rng.real01()<exp(d/T)){
-            flip_delta(pos,true);
-            score+=d;
+
+        /* --------------- 近傍操作選択 --------------- */
+        if(rng.randint(0,1)==0){                              // ---- 50 % : FLIP ----
+            int pos=rng.randint(0,N-1);
+            long long d=flip_delta(pos,false);
+            if(d>=0 || rng.real01()<exp(d/T)){
+                flip_delta(pos,true);
+                score+=d;
+            }
+        }else{                                                // ---- 50 % : SWAP ----
+            int a=rng.randint(0,N-1);
+            int b=rng.randint(0,N-2); if(b>=a) ++b;           // a≠b を保証
+            long long d=swap_delta(a,b,false);
+            if(d>=0 || rng.real01()<exp(d/T)){
+                swap_delta(a,b,true);
+                score+=d;
+            }
         }
         T*=decay;
     }
 
-    /* hill climbing on true score */
+    /* ---------- hill‑climb on true score ---------- */
     if(sigma_vals[PHASES-1]!=0){
         build_table(0);
         score=recompute();
@@ -167,7 +200,8 @@ int main(){
             }
         }
     }
-    /* ensure 200 dumps */
+
+    /* stderr 200 行保証 */
     while(dump_cnt<TARGET_DUMP){
         cerr<<S<<"\n";
         ++dump_cnt;
