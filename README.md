@@ -13,10 +13,17 @@ D_M X_M Y_M
 制約: 1 ≤ D_i ≤ 30, 0 ≤ X_i ≤ D_i, 1 ≤ Y_i ≤ 10 000
 
 ### スコア
-各条件 (D_i, X_i, Y_i) について
-for s = 0 .. N-D_i
-  if popcount(S[s..s+D_i-1]) == X_i
-    score += Y_i
+M個の条件がある。各条件 (D_i, X_i, Y_i) について
+「連続するD_i個のbitであって、1であるものの個数がX_i個であるもの」の数だけスコアにY_iを加算する。
+つまりi個目の条件によるスコア加算は最大で(N-D_i+1) * Y_iである。
+
+より形式的にいえば
+```
+for i = 1 .. M
+  for s = 0 .. N-D_i
+    if popcount(S[s..s+D_i-1]) == X_i
+      score += Y_i
+```
 
 ### テストケース生成
 乱数生成器 rng, seed 固定
