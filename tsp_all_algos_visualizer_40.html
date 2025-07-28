@@ -1,0 +1,331 @@
+
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>2‑D TSP Visualizer — SA / GA / Beam Search (40 cities)</title>
+<meta charset="utf-8">
+<style>
+ body{font-family:Arial,Helvetica,sans-serif;margin:20px;}
+ textarea{width:100%;box-sizing:border-box;margin-bottom:10px;font-family:monospace;}
+ #canvas{border:1px solid #444;margin-top:10px;background:#fafafa;}
+ button{margin-right:6px;}
+ input[type=text]{width:110px;margin-right:10px;}
+ #controls{margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;}
+ #speedLbl{margin-left:6px;}
+ #seekLbl{margin:0 6px;}
+</style>
+</head>
+<body>
+<h2>📍 2‑D TSP Visualizer — Simulated Annealing / Genetic Algorithm / Beam Search</h2>
+<p style="color:#555">都市数は<strong>40</strong>で固定です。インスタンス textarea の先頭行に「40」を置き、その後に <code>x y</code> 座標を 40 行入力する形式。</p>
+
+<div>
+<label>Seed: <input type="text" id="seed" value="0"></label>
+<button id="gen">Generate Cities</button>
+<button id="runSA">Run SA</button>
+<button id="runGA">Run GA</button>
+<label>Beam W: <input type="text" id="beamW" value="20"></label>
+<button id="runBeam">Run Beam Search</button>
+</div>
+
+<label style="font-weight:bold">City coordinates (first line must be “40”)</label>
+<textarea id="instance" rows="12"></textarea>
+
+<label style="font-weight:bold">Tour solutions — one permutation of 0‑39 per line (space / comma 区切り)</label>
+<textarea id="solution" rows="6"></textarea>
+
+<div id="controls">
+<button id="prev">◀ Prev</button>
+<input type="range" id="seek" min="1" value="1" style="flex:1;" hidden>
+<span id="seekLbl" hidden>1/1</span>
+<button id="next">Next ▶</button>
+<button id="play">▶ Play</button>
+<label id="speedLbl">Speed: <input type="range" id="speed" min="100" max="2000" value="500" step="100"> <span id="speedVal">0.5 s</span></label>
+<button id="loadBtn">Load Solutions</button>
+</div>
+
+<p id="status" style="font-size:1.1em;font-weight:bold;"></p>
+<canvas id="canvas" width="800" height="800"></canvas>
+
+<script>
+//=================== constants ===================
+const N_FIXED = 40;
+
+//=================== RNG helpers =================
+function mulberry32(a){return function(){var t=a+=0x6D2B79F5;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;}}
+function stringToSeed(str){let h=0;for(let i=0;i<str.length;i++)h=Math.imul(31,h)+str.charCodeAt(i)|0;return h>>>0;}
+function randInt(rng,min,max){return Math.floor(rng()*(max-min+1))+min;}
+
+//=================== global state =================
+let cities=[], solutionsArr=[], currentIdx=0, playTimer=null;
+
+//=================== city generation ==============
+function generateCities(){
+  const seedStr=document.getElementById("seed").value.trim();
+  const seedNum = seedStr===""?Math.floor(Math.random()*2**32)
+                 :(/^\d+$/.test(seedStr)?parseInt(seedStr,10):stringToSeed(seedStr));
+  const rng=mulberry32(seedNum);
+  cities=[];
+  for(let i=0;i<N_FIXED;i++){
+    cities.push({x:50+randInt(rng,0,700), y:50+randInt(rng,0,700)});
+  }
+  const instTxt=[N_FIXED.toString()].concat(cities.map(p=>p.x+" "+p.y)).join("\n");
+  document.getElementById("instance").value=instTxt;
+
+  const tour=[...Array(N_FIXED).keys()];
+  for(let i=N_FIXED-1;i>0;i--){const j=randInt(rng,0,i);[tour[i],tour[j]]=[tour[j],tour[i]];}
+  document.getElementById("solution").value=tour.join(" ");
+}
+
+//=================== parsing helpers ==============
+function parseInstance(txt){
+  const lines=txt.trim().split(/\n+/).filter(l=>l!=="");
+  if(lines.length<1) return [];
+  const n=parseInt(lines[0].trim(),10);
+  if(n!==N_FIXED){alert("先頭行は 40 としてください");return [];}
+  if(lines.length!==N_FIXED+1){alert("座標行数が不足しています");return [];}
+  const pts=[];
+  for(let i=1;i<=N_FIXED;i++){
+    const [x,y]=lines[i].trim().split(/\s+/).map(Number);
+    if(!(Number.isFinite(x)&&Number.isFinite(y))){alert("座標に数値以外が含まれています");return [];}
+    pts.push({x,y});
+  }
+  return pts;
+}
+function parseSolutions(text){
+  return text.split(/\n+/)
+             .map(l=>l.trim().replace(/,/g," ").split(/\s+/).map(Number))
+             .filter(arr=>arr.length===N_FIXED && arr.every(v=>Number.isInteger(v)))
+             .map(arr=>arr.slice());
+}
+
+//=================== distance & scoring ===========
+function dist(a,b){const dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy);}
+function tourLength(order){
+  let len=0;
+  for(let i=0;i<order.length;i++){
+    const a=cities[order[i]], b=cities[order[(i+1)%order.length]];
+    len+=dist(a,b);
+  }
+  return len;
+}
+
+//=================== drawing ======================
+function draw(order){
+  const canvas=document.getElementById("canvas");
+  const ctx=canvas.getContext("2d");
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!order||order.length===0) return;
+
+  ctx.lineWidth=2; ctx.strokeStyle="#0066ff";
+  ctx.beginPath();
+  const start=cities[order[0]];
+  ctx.moveTo(start.x,start.y);
+  for(let i=1;i<order.length;i++){const p=cities[order[i]];ctx.lineTo(p.x,p.y);}
+  ctx.lineTo(start.x,start.y);
+  ctx.stroke();
+
+  ctx.fillStyle="#ff6600";
+  for(const p of cities){ctx.beginPath();ctx.arc(p.x,p.y,4,0,Math.PI*2);ctx.fill();}
+
+  ctx.fillStyle="#000"; ctx.font="11px monospace";
+  for(let i=0;i<order.length;i++){const p=cities[order[i]];ctx.fillText(order[i],p.x+5,p.y-5);}
+}
+
+//=================== UI helpers ===================
+function updateSeekUI(){
+  const seek=document.getElementById("seek");
+  const lbl=document.getElementById("seekLbl");
+  if(solutionsArr.length<=1){seek.hidden=true;lbl.hidden=true;}
+  else{seek.hidden=false;lbl.hidden=false;seek.max=solutionsArr.length;seek.value=currentIdx+1;lbl.textContent=`${currentIdx+1}/${solutionsArr.length}`;}
+}
+function load(idx){
+  if(!cities.length||solutionsArr.length===0) return;
+  currentIdx=(idx+solutionsArr.length)%solutionsArr.length;
+  const order=solutionsArr[currentIdx];
+  const len=tourLength(order).toFixed(2);
+  document.getElementById("status").textContent=`Step ${currentIdx+1}/${solutionsArr.length} — Tour length: ${len}`;
+  draw(order);
+  updateSeekUI();
+}
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;document.getElementById("play").textContent="▶ Play";}}
+
+//================== Simulated Annealing ===========
+function runSA(){
+  if(!cities.length){alert("先に都市を生成してください");return;}
+  let order=[...Array(N_FIXED).keys()];
+  let bestLen=tourLength(order);
+
+  const steps=5000, T0=1000, Tend=1e-3;
+  const recordEvery=10;
+  const rng=mulberry32(1234567);
+
+  const record=[order.slice()];
+  let currLen=bestLen;
+
+  for(let iter=1;iter<=steps;iter++){
+    const i=randInt(rng,0,N_FIXED-1), j=randInt(rng,0,N_FIXED-1);
+    if(i===j) continue;
+    const a=Math.min(i,j), b=Math.max(i,j);
+    const aPrev=order[(a-1+N_FIXED)%N_FIXED], aCity=order[a], bCity=order[b], bNext=order[(b+1)%N_FIXED];
+    const delta =  dist(cities[aPrev],cities[bCity]) + dist(cities[aCity],cities[bNext])
+                 - dist(cities[aPrev],cities[aCity]) - dist(cities[bCity],cities[bNext]);
+
+    const T = T0 * Math.pow(Tend/T0, iter/steps);
+    if(delta<0 || Math.exp(-delta/T) > rng()){
+      for(let k=0;k<(b-a+1)/2;k++) [order[a+k],order[b-k]]=[order[b-k],order[a+k]];
+      currLen += delta;
+      if(currLen<bestLen){bestLen=currLen;}
+    }
+    if(iter%recordEvery===0) record.push(order.slice());
+  }
+
+  solutionsArr=record;
+  currentIdx=0;
+  load(0);
+}
+
+//================== Genetic Algorithm =============
+function shuffle(arr,rng){for(let i=arr.length-1;i>0;i--){const j=randInt(rng,0,i);[arr[i],arr[j]]=[arr[j],arr[i]];}}
+function orderCrossover(p1,p2,rng){
+  const n=p1.length;
+  const child=new Array(n).fill(-1);
+  const a=randInt(rng,0,n-2), b=randInt(rng,a+1,n-1);
+  for(let i=a;i<=b;i++) child[i]=p1[i];
+  let idx=(b+1)%n;
+  for(let k=0;k<n;k++){
+    const gene=p2[(b+1+k)%n];
+    if(!child.includes(gene)){child[idx]=gene; idx=(idx+1)%n;}
+  }
+  return child;
+}
+function mutateSwap(order,rng){const i=randInt(rng,0,order.length-1), j=randInt(rng,0,order.length-1);[order[i],order[j]]=[order[j],order[i]];}
+function runGA(){
+  if(!cities.length){alert("先に都市を生成してください");return;}
+  const rng=mulberry32(7654321);
+  const popSize=120, generations=400, mutationProb=0.2;
+
+  let population=[];
+  for(let i=0;i<popSize;i++){const t=[...Array(N_FIXED).keys()];shuffle(t,rng);population.push(t);}
+
+  const record=[];
+  for(let gen=0;gen<generations;gen++){
+    const scored=population.map(t=>({tour:t,len:tourLength(t)})).sort((a,b)=>a.len-b.len);
+    const elite=scored[0].tour.slice();
+    record.push(elite);
+
+    const next=[elite.slice()];
+    const tournament=(k)=>{
+      let best=null;
+      for(let i=0;i<k;i++){
+        const cand=scored[randInt(rng,0,scored.length-1)];
+        if(best===null||cand.len<best.len) best=cand;
+      }
+      return best.tour;
+    };
+
+    while(next.length<popSize){
+      const p1=tournament(5), p2=tournament(5);
+      let child=orderCrossover(p1,p2,rng);
+      if(rng()<mutationProb) mutateSwap(child,rng);
+      next.push(child);
+    }
+    population=next;
+  }
+
+  solutionsArr=record;
+  currentIdx=0;
+  load(0);
+}
+
+//================== Beam Search ===================
+function evaluatePath(path){
+  // cost = path edge sum + sum distances from last to every unvisited node
+  let edgeSum=0;
+  for(let i=1;i<path.length;i++){
+    edgeSum+=dist(cities[path[i-1]],cities[path[i]]);
+  }
+  const last=path[path.length-1];
+  let heuristic=0;
+  for(let v=0;v<N_FIXED;v++){
+    if(!path.includes(v)){
+      heuristic+=dist(cities[last],cities[v]);
+    }
+  }
+  return edgeSum+heuristic;
+}
+function padPath(path){
+  const unused=[];
+  for(let v=0;v<N_FIXED;v++){if(!path.includes(v)) unused.push(v);}
+  return path.concat(unused);
+}
+function runBeam(){
+  if(!cities.length){alert("先に都市を生成してください");return;}
+  const W=parseInt(document.getElementById("beamW").value)||20;
+
+  let beam=[{path:[0]}]; // start at city 0
+  const record=[];
+
+  for(let step=0;step<N_FIXED;step++){
+    // record current best (after padding)
+    record.push(padPath(beam[0].path));
+    if(step===N_FIXED-1) break;
+
+    const candidates=[];
+    beam.forEach(state=>{
+      const usedSet=new Set(state.path);
+      const last=state.path[state.path.length-1];
+      for(let v=0;v<N_FIXED;v++){
+        if(!usedSet.has(v)){
+          const newPath=state.path.concat(v);
+          const cost=evaluatePath(newPath);
+          candidates.push({path:newPath,cost});
+        }
+      }
+    });
+    candidates.sort((a,b)=>a.cost-b.cost);
+    beam=candidates.slice(0,W);
+  }
+
+  solutionsArr=record;
+  currentIdx=0;
+  load(0);
+}
+
+//================== event bindings ================
+document.getElementById("gen").onclick = ()=>{generateCities(); solutionsArr=[]; draw();};
+document.getElementById("loadBtn").onclick = ()=>{
+  stopPlay();
+  cities=parseInstance(document.getElementById("instance").value);
+  if(!cities.length){return;}
+  solutionsArr=parseSolutions(document.getElementById("solution").value);
+  if(!solutionsArr.length){alert("有効なツアーがありません");return;}
+  load(0);
+};
+document.getElementById("runSA").onclick=()=>{stopPlay(); runSA();};
+document.getElementById("runGA").onclick=()=>{stopPlay(); runGA();};
+document.getElementById("runBeam").onclick=()=>{stopPlay(); runBeam();};
+
+document.getElementById("prev").onclick=()=>{stopPlay(); if(solutionsArr.length) load(currentIdx-1);};
+document.getElementById("next").onclick=()=>{stopPlay(); if(solutionsArr.length) load(currentIdx+1);};
+document.getElementById("seek").oninput=e=>{stopPlay(); load(+e.target.value-1);};
+
+document.getElementById("play").onclick=()=>{
+  if(solutionsArr.length<=1) return;
+  if(!playTimer){
+    const speed=+document.getElementById("speed").value;
+    playTimer=setInterval(()=>load(currentIdx+1),speed);
+    document.getElementById("play").textContent="⏸ Pause";
+  }else stopPlay();
+};
+document.getElementById("speed").oninput=e=>{
+  document.getElementById("speedVal").textContent=(e.target.value/1000).toFixed(1)+" s";
+  if(playTimer){stopPlay(); document.getElementById("play").click();}
+};
+
+//================== bootstrap =====================
+generateCities();
+</script>
+</body>
+</html>
